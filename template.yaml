@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: SAM template for the Lambda Protobuf Decoding
+
+Parameters:
+
+  KinesisProtobufStreamName:
+    Description: "Name of the kinesis stream containing the protobuf messages"
+    Type: String
+    MinLength: 1
+
+  TargetS3BucketName:
+    Description: "Name of the S3 bucket where to store the decoded messages"
+    Type: String
+    MinLength: 1
+    
+  ProtobufLayerName:
+    Description: "Name and version in the format: 'name:version' of the Lambda Layer containing the protobuf library"
+    Default: "protobuf-lambda:1"
+    Type: String
+    MinLength: 1
+
+
+Resources:
+
+  ProtoLambdaIAMRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: proto-demo-lambda-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaKinesisExecutionRole  
+      Policies:
+        - PolicyName: "cw-demo-protobuf-lambda"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Effect: "Allow"
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/protobuf-decoder-lambda:*"
+        - PolicyName: "s3-demo-protobuf-lambda"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "s3:*"
+                Effect: "Allow"
+                Resource:
+                  - !Sub "arn:aws:s3:::${TargetS3BucketName}"
+                  - !Sub "arn:aws:s3:::${TargetS3BucketName}/*"
+        - PolicyName:
+            Fn::Sub: ${AWS::StackName}-KMS
+          PolicyDocument:
+            Statement:
+            - Effect: Allow
+              Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:DescribeKey
+              Resource: '*'
+
+
+  LambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/protodecode
+      Handler: app.lambda_handler
+      Role: !GetAtt ProtoLambdaIAMRole.Arn
+      Timeout: 60
+      Runtime: python3.9
+      FunctionName: "protobuf-decoder-lambda"
+      MemorySize: 512
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref 'TargetS3BucketName'     
+      Layers:
+        - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:${ProtobufLayerName}" 
+      Events:
+          KinesisEvent:
+            Type: Kinesis
+            Properties:
+              Stream: !Sub "arn:aws:kinesis:${AWS::Region}:${AWS::AccountId}:stream/${KinesisProtobufStreamName}"
+              StartingPosition: LATEST 
+              BatchSize: 100 
+              Enabled: true
+
+
+Outputs:
+  LambdaFunction:
+    Value: !Ref 'LambdaFunction'
+    Description: Lambda Function for Protobuf Decoding
